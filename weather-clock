@@ -1,0 +1,164 @@
+# Toggle on D35: WEATHER (API temp -> servo angle) <-> TIMER (30 s sweep)
+
+import time
+from machine import Pin, PWM
+import urequests
+
+# ---------------- Pins & Servo ----------------
+BTN_PIN   = 35
+SERVO_PIN = 18
+
+PWM_FREQ   = 50            # 50 Hz
+MIN_US     = 500           # ~0°
+MAX_US     = 2500          # ~180°
+PERIOD_US  = 20_000        # 20 ms period
+
+servo = PWM(Pin(SERVO_PIN), freq=PWM_FREQ)
+
+def angle_to_duty_u16(angle_deg: float) -> int:
+    a = 0.0 if angle_deg < 0 else 180.0 if angle_deg > 180 else float(angle_deg)
+    pulse_us = MIN_US + (MAX_US - MIN_US) * (a / 180.0)
+    return int((pulse_us / PERIOD_US) * 65535)
+
+def set_servo_angle(angle_deg: float):
+    servo.duty_u16(angle_to_duty_u16(angle_deg))
+
+# ---------------- Button (debounced rising-edge) ----------------
+btn = Pin(BTN_PIN, Pin.IN)     # external pulldown required
+DEBOUNCE_MS = 50
+_last_raw = btn.value()
+_last_stable = _last_raw
+_last_change_ms = time.ticks_ms()
+
+def button_pressed_edge() -> bool:
+    global _last_raw, _last_stable, _last_change_ms
+    raw = btn.value()
+    if raw != _last_raw:
+        _last_raw = raw
+        _last_change_ms = time.ticks_ms()
+    if time.ticks_diff(time.ticks_ms(), _last_change_ms) > DEBOUNCE_MS:
+        if _last_stable == 0 and raw == 1:
+            _last_stable = 1
+            return True
+        _last_stable = raw
+    return False
+
+# ---------------- WEATHER: API fetch (cached) ----------------
+URL = "https://api.open-meteo.com/v1/forecast?latitude=42.4184&longitude=-71.1062&current_weather=true&temperature_unit=fahrenheit"
+
+def get_temp_c_from_api() -> float:
+    r = None
+    try:
+        r = urequests.get(URL)
+        data = r.json()
+        f = float(data["current_weather"]["temperature"])
+        return (f - 32.0) * (5.0/9.0)
+    finally:
+        try:
+            if r:
+                r.close()
+        except:
+            pass
+
+LATEST_TEMP_C = None
+LAST_FETCH_S = 0
+FETCH_PERIOD_S = 120  # refresh every 2 minutes
+
+def refresh_weather_if_due(now_s):
+    global LATEST_TEMP_C, LAST_FETCH_S
+    if (now_s - LAST_FETCH_S) >= FETCH_PERIOD_S or LATEST_TEMP_C is None:
+        try:
+            LATEST_TEMP_C = get_temp_c_from_api()
+            LAST_FETCH_S = now_s
+            print("Weather updated: {:.1f} °C".format(LATEST_TEMP_C))
+        except Exception as e:
+            print("Weather fetch failed:", e)
+
+def temp_to_angle_inverted(c):
+    # Inverted mapping: 30°C -> 0°, 15°C -> 90°, 0°C -> 180°
+    angle = 180.0 * (1.0 - (c / 30.0))
+    if angle < 0.0: angle = 0.0
+    if angle > 180.0: angle = 180.0
+    return angle
+
+# ---------------- TIMER: back-and-forth sweep ----------------
+TIMER_STEP_MS = 50        # update every 50 ms
+TIMER_SPEED   = 180 / 30  # deg/sec → here: 180° sweep in 30 sec
+
+timer_last_ms = None
+timer_angle   = 0.0
+timer_dir     = 1   # +1 = forward (0→180), -1 = backward (180→0)
+
+def timer_enter():
+    global timer_last_ms, timer_angle, timer_dir
+    timer_last_ms = time.ticks_ms()
+    timer_angle   = 0.0
+    timer_dir     = 1
+    set_servo_angle(timer_angle)
+
+def timer_update(now_ms):
+    global timer_last_ms, timer_angle, timer_dir
+    if timer_last_ms is None:
+        return
+
+    if time.ticks_diff(now_ms, timer_last_ms) >= TIMER_STEP_MS:
+        dt = time.ticks_diff(now_ms, timer_last_ms) / 1000.0  # in seconds
+        timer_last_ms = now_ms
+
+        # update angle
+        timer_angle += timer_dir * TIMER_SPEED * dt
+
+        # bounce at endpoints
+        if timer_angle >= 180.0:
+            timer_angle = 180.0
+            timer_dir = -1
+        elif timer_angle <= 0.0:
+            timer_angle = 0.0
+            timer_dir = 1
+
+        set_servo_angle(timer_angle)
+
+# ---------------- Modes ----------------
+MODE_WEATHER = 0
+MODE_TIMER   = 1
+mode = MODE_WEATHER
+
+def enter_weather_mode():
+    global mode
+    mode = MODE_WEATHER
+    print("[MODE] WEATHER")
+
+def enter_timer_mode():
+    global mode
+    mode = MODE_TIMER
+    timer_enter()
+    print("[MODE] TIMER (30 s)")
+
+print("Ready. D35 toggles WEATHER <-> TIMER.")
+enter_weather_mode()
+
+# ---------------- Main Loop ----------------
+while True:
+    now_ms = time.ticks_ms()
+    now_s  = now_ms // 1000
+
+    # Background weather updates
+    refresh_weather_if_due(now_s)
+
+    # Button -> toggle mode
+    if button_pressed_edge():
+        if mode == MODE_WEATHER:
+            enter_timer_mode()
+        else:
+            enter_weather_mode()
+
+    # Mode behavior
+    if mode == MODE_WEATHER:
+        if LATEST_TEMP_C is not None:
+            set_servo_angle(temp_to_angle_inverted(LATEST_TEMP_C))
+
+    elif mode == MODE_TIMER:
+        timer_update(now_ms)
+
+    time.sleep_ms(10)
+
