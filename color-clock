@@ -1,0 +1,225 @@
+from machine import Pin, PWM, I2C
+
+from time import sleep, ticks_ms
+
+from veml6040 import VEML6040
+
+import math
+
+ 
+
+# === Setup ===
+
+ 
+
+# I2C for color sensor
+
+i2c = I2C(scl=Pin(22), sda=Pin(21))
+
+color_sensor = VEML6040(i2c)
+
+ 
+
+# Servo setup
+
+servo = PWM(Pin(18), freq=50)
+
+def set_servo(angle):
+
+    duty_min = 40
+
+    duty_max = 115
+
+    duty = int(duty_min + (angle / 180) * (duty_max - duty_min))
+
+    servo.duty(duty)
+
+ 
+
+# Buttons
+
+train_green_btn = Pin(34, Pin.IN, Pin.PULL_UP)  # green train and mode toggle
+
+train_red_btn = Pin(35, Pin.IN, Pin.PULL_UP)    # red train
+
+ 
+
+# Data structures
+
+training_data = []  # list of ( (r, g, b, w), label ) pairs
+
+mode = "training"
+
+K = 3  # number of neighbors
+
+ 
+
+# Long press detection vars
+
+mode_btn_pressed_time = None
+
+LONG_PRESS_TIME = 2000  # milliseconds
+
+ 
+
+# === Utilities ===
+
+ 
+
+def read_color():
+
+    r, g, b, w = color_sensor.read_rgbw()
+
+    return (r, g, b, w)
+
+ 
+
+def distance(c1, c2):
+
+    dr = c1[0] - c2[0]
+
+    dg = c1[1] - c2[1]
+
+    db = c1[2] - c2[2]
+
+    return math.sqrt(dr*dr + dg*dg + db*db)
+
+ 
+
+def knn_predict(input_color, k=3):
+
+    if not training_data:
+
+        return None
+
+    dlist = []
+
+    for features, label in training_data:
+
+        d = distance(input_color, features)
+
+        dlist.append((d, label))
+
+    dlist.sort(key=lambda x: x[0])
+
+    nearest = dlist[:k]
+
+    counts = {}
+
+    for _, lab in nearest:
+
+        counts[lab] = counts.get(lab, 0) + 1
+
+    best = max(counts, key=lambda lab: counts[lab])
+
+    return best
+
+ 
+
+# === Main Loop ===
+
+ 
+
+print("Smart Motor with Grove Color Sensor V3.0 (VEML6040) — starting in TRAINING mode")
+
+print("Hold green button (>2s) to toggle TRAINING / PLAYBACK")
+
+ 
+
+while True:
+
+    green_pressed = not train_green_btn.value()
+
+    red_pressed = not train_red_btn.value()
+
+ 
+
+    # Long press detection for green button
+
+    if green_pressed:
+
+        if mode_btn_pressed_time is None:
+
+            mode_btn_pressed_time = ticks_ms()
+
+        else:
+
+            elapsed = ticks_ms() - mode_btn_pressed_time
+
+            if elapsed > LONG_PRESS_TIME:
+
+                # Toggle mode
+
+                mode = "playback" if mode == "training" else "training"
+
+                print("Mode switched to:", mode)
+
+                if mode == "playback":
+
+                    set_servo(80)  # center servo on entering playback
+
+                mode_btn_pressed_time = None
+
+                sleep(1)  # debounce
+
+    else:
+
+        # Button released: if short press happened, train green
+
+        if mode_btn_pressed_time is not None:
+
+            elapsed = ticks_ms() - mode_btn_pressed_time
+
+            if elapsed < LONG_PRESS_TIME and mode == "training":
+
+                color = read_color()
+
+                training_data.append((color, "green"))
+
+                print("Trained GREEN:", color)
+
+                sleep(1)
+
+            mode_btn_pressed_time = None
+
+ 
+
+    if red_pressed and mode == "training":
+
+        color = read_color()
+
+        training_data.append((color, "red"))
+
+        print("Trained RED:", color)
+
+        sleep(1)
+
+ 
+
+    if mode == "playback":
+
+        color = read_color()
+
+        if training_data:
+
+            label = knn_predict(color, K)
+
+            print("Prediction:", label)
+
+            if label == "green":
+
+                set_servo(0)
+
+            elif label == "red":
+
+                set_servo(180)
+
+        else:
+
+            print("No training data yet!")
+
+        sleep(0.5)
+
+ 
+
+    sleep(0.1)
