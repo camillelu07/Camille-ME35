@@ -1,0 +1,189 @@
+"""
+Main control script for 2-DOF robotic arm light painting
+Cytron RoboESP32 with two MG90s servos
+LED turns on at each point, off during movement
+"""
+
+from kinematics import InverseKinematics
+from servoController import ServoController
+from ledController import LEDController
+import time
+
+# Configuration
+L1 = 95  # Length of lower arm in mm
+L2 = 88  # Length of upper arm in mm
+SERVO1_PIN = 4   # Lower arm servo (base rotation)
+SERVO2_PIN = 5   # Upper arm servo (elbow rotation)
+LED_PIN = 15     # LED pin
+
+# Servo offset angles (adjust based on your physical assembly)
+SERVO1_OFFSET = 90  # Offset for servo 1 in degrees
+SERVO2_OFFSET = 0  # Offset for servo 2 in degrees
+
+# Timing configuration
+DWELL_TIME = 0.25      # Time to dwell at each point with LED on (seconds)
+MOVE_TIME = 0.3       # Time for movement between points (seconds)
+
+# Import your coordinate matrix generator if available
+# from coordinate_generator import get_coordinate_matrix
+
+
+# Define a path of target coordinates
+# Each coordinate is (x, y) in mm
+x_targets = [0, 7, 18, 30, 38, 34, 20, 0, -20, -34, -38, -30, -18, -7, 0]
+y_targets = [165, 174, 180, 174, 162, 146, 138, 130, 138, 146, 162, 172, 180, 174, 165]
+
+def main():
+    print("="*70)
+    print("2-DOF Robotic Arm Light Painting System")
+    print("="*70)
+    
+    # Initialize components
+    print("\nInitializing components...")
+    ik = InverseKinematics(L1, L2, SERVO1_OFFSET, SERVO2_OFFSET)
+    servo_ctrl = ServoController(SERVO1_PIN, SERVO2_PIN)
+    led = LEDController(LED_PIN)
+    
+    print(f"Arm configuration:")
+    print(f"  L1 (lower arm): {L1}mm")
+    print(f"  L2 (upper arm): {L2}mm")
+    print(f"  Servo 1 offset: {SERVO1_OFFSET}°")
+    print(f"  Servo 2 offset: {SERVO2_OFFSET}°")
+    print(f"  Workspace radius: {L1 + L2}mm")
+    print(f"  Minimum reach: {abs(L1 - L2)}mm")
+    
+    # Compute all servo angles using inverse kinematics
+    print(f"\nComputing servo angles for {len(x_targets)} target points...")
+    path_solutions = ik.map_to_servos(
+        x_targets, 
+        y_targets, 
+        prefer_elbow_up=True,
+        warn_clamping=True
+    )
+    
+    if path_solutions is None:
+        print("Error: Failed to compute servo angles!")
+        return
+    
+    # Display computed angles
+    print("\n" + "="*70)
+    print("COMPUTED SERVO ANGLES")
+    print("="*70)
+    
+    valid_count = 0
+    clamped_count = 0
+    unreachable_count = 0
+    
+    for i, result in enumerate(path_solutions):
+        x, y = result['target']
+        status = result['status']
+        
+        if status == 'unreachable':
+            print(f"Point {i:2d}: (x={x:6.1f}, y={y:6.1f}) -> UNREACHABLE")
+            unreachable_count += 1
+        else:
+            servo1 = result['servo1']
+            servo2 = result['servo2']
+            config = result['config']
+            
+            if result['clamped']:
+                status_marker = " ⚠ CLAMPED"
+                clamped_count += 1
+            else:
+                status_marker = " ✓"
+                valid_count += 1
+            
+            print(f"Point {i:2d}: (x={x:6.1f}, y={y:6.1f}) -> "
+                  f"S1={servo1:6.2f}°, S2={servo2:6.2f}° "
+                  f"[{config}]{status_marker}")
+    
+    print("="*70)
+    print(f"Summary: {valid_count} valid, {clamped_count} clamped, "
+          f"{unreachable_count} unreachable (of {len(path_solutions)} total)")
+    print("="*70)
+    
+    # Ask for confirmation before proceeding
+    print("\nReady to execute light painting sequence.")
+    print("The LED will turn ON at each point and OFF during movement.")
+    print(f"Dwell time at each point: {DWELL_TIME}s")
+    
+    # Move to home position first
+    print("\nMoving to home position (90°, 90°)...")
+    servo_ctrl.move_to_angles(90, 90)
+    time.sleep(1)
+    
+    # Execute the light painting sequence
+    print("\n" + "="*70)
+    print("EXECUTING LIGHT PAINTING SEQUENCE")
+    print("="*70)
+    
+    for i, result in enumerate(path_solutions):
+        x, y = result['target']
+        
+        if result['status'] == 'unreachable':
+            print(f"\nPoint {i}: ({x:.1f}, {y:.1f}) - SKIPPING (unreachable)")
+            continue
+        
+        servo1 = result['servo1']
+        servo2 = result['servo2']
+        
+        print(f"\nPoint {i}: ({x:.1f}, {y:.1f})")
+        print(f"  Moving to: S1={servo1:.2f}°, S2={servo2:.2f}°")
+        
+        # Turn LED OFF during movement
+        led.off()
+        
+        # Move servos to target position
+        servo_ctrl.move_to_angles(servo1, servo2)
+        time.sleep(MOVE_TIME)  # Wait for movement to complete
+        
+        # Turn LED ON at the target point
+        led.on()
+        print(f"  LED ON - Dwelling for {DWELL_TIME}s")
+        
+        # Dwell at the point
+        time.sleep(DWELL_TIME)
+    
+    # Sequence complete
+    print("\n" + "="*70)
+    print("LIGHT PAINTING SEQUENCE COMPLETE!")
+    print("="*70)
+    
+    # Turn off LED
+    led.off()
+    print("\nLED turned off")
+    
+    # Return to home position
+    print("Returning to home position...")
+    servo_ctrl.move_to_angles(90, 90)
+    time.sleep(1)
+    
+    # Cleanup
+    servo_ctrl.deinit()
+    print("System shutdown complete")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nProgram interrupted by user")
+        # Emergency cleanup
+        try:
+            from led_controller import LEDController
+            led = LEDController(LED_PIN)
+            led.off()
+            print("LED turned off")
+        except:
+            pass
+    except Exception as e:
+        print(f"\nError occurred: {e}")
+        import sys
+        sys.print_exception(e)
+        # Emergency cleanup
+        try:
+            from led_controller import LEDController
+            led = LEDController(LED_PIN)
+            led.off()
+            print("LED turned off")
+        except:
+            pass
