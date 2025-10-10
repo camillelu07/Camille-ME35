@@ -1,0 +1,304 @@
+import math
+
+def inverse_kinematics(x, y, L1, L2):
+    """
+    Calculates the joint angles for a 2-link planar robotic arm.
+    
+    Args:
+        x (float): Target x-coordinate of the end effector.
+        y (float): Target y-coordinate of the end effector.
+        L1 (float): Length of the first link.
+        L2 (float): Length of the second link.
+        
+    Returns:
+        tuple: A tuple containing two potential solutions for (theta1, theta2)
+               in radians. Returns None if the target is unreachable.
+    """
+    d_sq = x**2 + y**2
+    d = math.sqrt(d_sq)
+
+    if d > (L1 + L2) or d < abs(L1 - L2):
+        return None
+
+    cos_theta2 = (d_sq - L1**2 - L2**2) / (2 * L1 * L2)
+    cos_theta2 = max(-1.0, min(1.0, cos_theta2))
+
+    theta2_elbow_up = math.acos(cos_theta2)
+    theta2_elbow_down = -theta2_elbow_up
+    
+    alpha = math.atan2(y, x)
+    
+    cos_beta = (L1**2 + d_sq - L2**2) / (2 * L1 * d)
+    cos_beta = max(-1.0, min(1.0, cos_beta))
+    beta = math.acos(cos_beta)
+    
+    theta1_elbow_up = alpha - beta
+    theta1_elbow_down = alpha + beta
+    
+    return ((theta1_elbow_up, theta2_elbow_up), (theta1_elbow_down, theta2_elbow_down))
+
+
+def is_servo_valid(angle, tolerance=5):
+    """
+    Check if a servo angle is within valid range (0-180 degrees).
+    
+    Args:
+        angle (float): Servo angle in degrees.
+        tolerance (float): Allowable tolerance outside range in degrees.
+        
+    Returns:
+        bool: True if angle is valid (or close enough), False otherwise.
+    """
+    return -tolerance <= angle <= (180 + tolerance)
+
+
+def get_theta_matrix(x_values, y_values, L1, L2, prefer_elbow_up=True, return_degrees=True):
+    """
+    Computes joint angles (theta1, theta2) for a sequence of target coordinates
+    and returns them as a two-column matrix.
+
+    Args:
+        x_values (list): Array of target x-coordinates.
+        y_values (list): Array of target y-coordinates.
+        L1 (float): Length of the first link.
+        L2 (float): Length of the second link.
+        prefer_elbow_up (bool): If True, prefer elbow-up solution when available.
+        return_degrees (bool): If True, return angles in degrees, else radians.
+        
+    Returns:
+        list: A list of [theta1, theta2] pairs (2-column matrix).
+              Returns None for unreachable points.
+    """
+    if len(x_values) != len(y_values):
+        print("Error: x_values and y_values must have the same number of elements.")
+        return None
+
+    theta_matrix = []
+
+    for x, y in zip(x_values, y_values):
+        solutions = inverse_kinematics(x, y, L1, L2)
+        
+        if solutions is None:
+            theta_matrix.append([None, None])
+            continue
+
+        (t1_up, t2_up), (t1_down, t2_down) = solutions
+
+        # Select preferred configuration
+        if prefer_elbow_up:
+            theta1, theta2 = t1_up, t2_up
+        else:
+            theta1, theta2 = t1_down, t2_down
+        
+        # Convert to degrees if requested
+        if return_degrees:
+            theta1 = math.degrees(theta1)
+            theta2 = math.degrees(theta2)
+        
+        theta_matrix.append([theta1, theta2])
+
+    return theta_matrix
+
+
+def map_to_servos(x_values, y_values, L1, L2, t1_offset, t2_offset, 
+                  prefer_elbow_up=True, warn_clamping=True, return_theta_matrix=False):
+    """
+    Computes the servo angles for a sequence of target coordinates,
+    considering physical constraints.
+
+    Args:
+        x_values (list): Array of target x-coordinates.
+        y_values (list): Array of target y-coordinates.
+        L1 (float): Length of the first link.
+        L2 (float): Length of the second link.
+        t1_offset (float): Angle offset for servo 1 in degrees.
+        t2_offset (float): Angle offset for servo 2 in degrees.
+        prefer_elbow_up (bool): If True, prefer elbow-up solution when both valid.
+        warn_clamping (bool): If True, print warnings when clamping occurs.
+        return_theta_matrix (bool): If True, also return theta matrix alongside results.
+        
+    Returns:
+        list or tuple: A list of dictionaries containing servo angles and metadata.
+                       If return_theta_matrix=True, returns (results, theta_matrix).
+    """
+    if len(x_values) != len(y_values):
+        print("Error: x_values and y_values must have the same number of elements.")
+        return None
+
+    results = []
+    theta_matrix = []
+
+    for i, (x, y) in enumerate(zip(x_values, y_values)):
+        solutions = inverse_kinematics(x, y, L1, L2)
+        
+        if solutions is None:
+            results.append({
+                'target': (x, y),
+                'servo1': None,
+                'servo2': None,
+                'config': None,
+                'status': 'unreachable',
+                'clamped': False
+            })
+            theta_matrix.append([None, None])
+            continue
+
+        (t1_up, t2_up), (t1_down, t2_down) = solutions
+
+        # Convert all solutions to degrees
+        t1_up_deg = math.degrees(t1_up)
+        t2_up_deg = math.degrees(t2_up)
+        t1_down_deg = math.degrees(t1_down)
+        t2_down_deg = math.degrees(t2_down)
+
+        # Map to servo coordinates
+        servo1_up = t1_up_deg + t1_offset
+        servo2_up = t2_up_deg + t2_offset
+        servo1_down = t1_down_deg + t1_offset
+        servo2_down = t2_down_deg + t2_offset
+
+        # Check which solutions are valid
+        up_valid = is_servo_valid(servo1_up) and is_servo_valid(servo2_up)
+        down_valid = is_servo_valid(servo1_down) and is_servo_valid(servo2_down)
+
+        # Select the best solution
+        if up_valid and (prefer_elbow_up or not down_valid):
+            servo1, servo2 = servo1_up, servo2_up
+            theta1_deg, theta2_deg = t1_up_deg, t2_up_deg
+            config = 'elbow_up'
+        elif down_valid:
+            servo1, servo2 = servo1_down, servo2_down
+            theta1_deg, theta2_deg = t1_down_deg, t2_down_deg
+            config = 'elbow_down'
+        elif not up_valid and not down_valid:
+            # Neither solution valid - use preferred and clamp
+            if prefer_elbow_up:
+                servo1, servo2 = servo1_up, servo2_up
+                theta1_deg, theta2_deg = t1_up_deg, t2_up_deg
+                config = 'elbow_up'
+            else:
+                servo1, servo2 = servo1_down, servo2_down
+                theta1_deg, theta2_deg = t1_down_deg, t2_down_deg
+                config = 'elbow_down'
+        else:
+            servo1, servo2 = servo1_up, servo2_up
+            theta1_deg, theta2_deg = t1_up_deg, t2_up_deg
+            config = 'elbow_up'
+
+        # Add theta values to matrix
+        theta_matrix.append([theta1_deg, theta2_deg])
+
+        # Track if clamping is needed
+        needs_clamping = not (0 <= servo1 <= 180 and 0 <= servo2 <= 180)
+        
+        # Clamp to valid servo range
+        servo1_clamped = max(0, min(180, servo1))
+        servo2_clamped = max(0, min(180, servo2))
+
+        if warn_clamping and needs_clamping:
+            print(f"Warning: Target {i} (x={x}, y={y}) requires clamping!")
+            print(f"  Unclamped: Servo1={servo1:.2f}°, Servo2={servo2:.2f}°")
+            print(f"  Clamped:   Servo1={servo1_clamped:.2f}°, Servo2={servo2_clamped:.2f}°")
+
+        results.append({
+            'target': (x, y),
+            'servo1': servo1_clamped,
+            'servo2': servo2_clamped,
+            'theta1': theta1_deg,
+            'theta2': theta2_deg,
+            'config': config,
+            'status': 'clamped' if needs_clamping else 'valid',
+            'clamped': needs_clamping,
+            'valid_configs': {
+                'elbow_up': up_valid,
+                'elbow_down': down_valid
+            }
+        })
+
+    if return_theta_matrix:
+        return results, theta_matrix
+    return results
+
+
+# --- Example usage ---
+L1 = 95
+L2 = 88
+
+# Define a path of target coordinates
+x_targets = [0, 0, 7, 18, 30, 38, 34, 20, 0, -20, -34, -38, -30, -18, -7, 0]
+y_targets = [183, 165, 174, 180, 174, 162, 146, 138, 130, 138, 146, 162, 172, 180, 174, 165]
+
+# Define your servo offsets based on your physical assembly
+servo1_offset = 0  # Offset for the first servo
+servo2_offset = 90  # Offset for the second servo
+
+print("Computing servo angles...\n")
+
+# Method 1: Get just the theta matrix
+print("="*70)
+print("METHOD 1: Get theta matrix only")
+print("="*70)
+theta_matrix = get_theta_matrix(x_targets, y_targets, L1, L2, 
+                                prefer_elbow_up=True, return_degrees=True)
+
+print("\nTheta Matrix (degrees):")
+print("  [theta1, theta2]")
+for i, row in enumerate(theta_matrix):
+    if row[0] is not None:
+        print(f"  [{row[0]:7.2f}, {row[1]:7.2f}]")
+    else:
+        print(f"  [   None,    None] <- Unreachable")
+
+# Method 2: Get both results and theta matrix
+print("\n" + "="*70)
+print("METHOD 2: Get servo results with theta matrix")
+print("="*70)
+path_solutions, theta_matrix_2 = map_to_servos(x_targets, y_targets, L1, L2, 
+                                                servo1_offset, servo2_offset,
+                                                prefer_elbow_up=True,
+                                                warn_clamping=True,
+                                                return_theta_matrix=True)
+
+if path_solutions:
+    print("\nSERVO ANGLE RESULTS")
+    print("-"*70)
+    
+    for i, result in enumerate(path_solutions):
+        x, y = result['target']
+        status = result['status']
+        
+        if status == 'unreachable':
+            print(f"Target {i}: (x={x:6.1f}, y={y:6.1f}) -> UNREACHABLE")
+        else:
+            servo1 = result['servo1']
+            servo2 = result['servo2']
+            theta1 = result['theta1']
+            theta2 = result['theta2']
+            config = result['config']
+            status_marker = " ⚠ CLAMPED" if result['clamped'] else " ✓"
+            
+            print(f"Target {i}: (x={x:6.1f}, y={y:6.1f}) -> "
+                  f"θ1={theta1:6.2f}°, θ2={theta2:6.2f}° | "
+                  f"S1={servo1:6.2f}°, S2={servo2:6.2f}° "
+                  f"[{config}]{status_marker}")
+    
+    print("="*70)
+    
+    # Summary statistics
+    total = len(path_solutions)
+    unreachable = sum(1 for r in path_solutions if r['status'] == 'unreachable')
+    clamped = sum(1 for r in path_solutions if r['clamped'])
+    valid = total - unreachable - clamped
+    
+    print(f"\nSummary: {valid} valid, {clamped} clamped, {unreachable} unreachable (of {total} targets)")
+    
+    print("\n" + "="*70)
+    print("THETA MATRIX (for easy copy/paste)")
+    print("="*70)
+    print("theta_values = [")
+    for row in theta_matrix_2:
+        if row[0] is not None:
+            print(f"    [{row[0]:7.2f}, {row[1]:7.2f}],")
+        else:
+            print(f"    [None, None],  # Unreachable")
+    print("]")
