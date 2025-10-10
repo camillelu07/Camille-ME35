@@ -1,0 +1,201 @@
+"""
+Inverse Kinematics solver for 2-DOF planar robotic arm
+Converts (x, y) coordinates to joint angles (theta1, theta2)
+Based on provided IK solution with servo offset mapping
+"""
+
+import math
+
+class InverseKinematics:
+    def __init__(self, l1, l2, servo1_offset=90, servo2_offset=90):
+        """
+        Initialize IK solver with arm segment lengths and servo offsets
+        
+        Args:
+            l1: Length of lower arm (base to elbow) in mm
+            l2: Length of upper arm (elbow to end effector) in mm
+            servo1_offset: Angle offset for servo 1 in degrees (default 90)
+            servo2_offset: Angle offset for servo 2 in degrees (default 90)
+        """
+        self.l1 = l1
+        self.l2 = l2
+        self.servo1_offset = servo1_offset
+        self.servo2_offset = servo2_offset
+        self.max_reach = l1 + l2
+        self.min_reach = abs(l1 - l2)
+    
+    def inverse_kinematics_raw(self, x, y):
+        """
+        Calculates the joint angles for a 2-link planar robotic arm.
+        
+        Args:
+            x: Target x-coordinate of the end effector
+            y: Target y-coordinate of the end effector
+            
+        Returns:
+            tuple: Two potential solutions for (theta1, theta2) in radians
+                   ((t1_up, t2_up), (t1_down, t2_down))
+                   Returns None if the target is unreachable
+        """
+        d_sq = x**2 + y**2
+        d = math.sqrt(d_sq)
+
+        if d > (self.l1 + self.l2) or d < abs(self.l1 - self.l2):
+            return None
+
+        cos_theta2 = (d_sq - self.l1**2 - self.l2**2) / (2 * self.l1 * self.l2)
+        cos_theta2 = max(-1.0, min(1.0, cos_theta2))
+
+        theta2_elbow_up = math.acos(cos_theta2)
+        theta2_elbow_down = -theta2_elbow_up
+        
+        alpha = math.atan2(y, x)
+        
+        cos_beta = (self.l1**2 + d_sq - self.l2**2) / (2 * self.l1 * d)
+        cos_beta = max(-1.0, min(1.0, cos_beta))
+        beta = math.acos(cos_beta)
+        
+        theta1_elbow_up = alpha - beta
+        theta1_elbow_down = alpha + beta
+        
+        return ((theta1_elbow_up, theta2_elbow_up), (theta1_elbow_down, theta2_elbow_down))
+    
+    def is_servo_valid(self, angle, tolerance=5):
+        """
+        Check if a servo angle is within valid range (0-180 degrees).
+        
+        Args:
+            angle: Servo angle in degrees
+            tolerance: Allowable tolerance outside range in degrees
+            
+        Returns:
+            bool: True if angle is valid (or close enough), False otherwise
+        """
+        return -tolerance <= angle <= (180 + tolerance)
+    
+    def solve(self, x, y, prefer_elbow_up=True, warn_clamping=False):
+        """
+        Solve inverse kinematics for target position (x, y) and return servo angles
+        
+        Args:
+            x: Target x coordinate in mm
+            y: Target y coordinate in mm
+            prefer_elbow_up: If True, prefer elbow-up solution when both valid
+            warn_clamping: If True, print warnings when clamping occurs
+            
+        Returns:
+            dict: Dictionary containing servo angles and metadata, or None if unreachable
+        """
+        solutions = self.inverse_kinematics_raw(x, y)
+        
+        if solutions is None:
+            return None
+
+        (t1_up, t2_up), (t1_down, t2_down) = solutions
+
+        # Convert all solutions to degrees
+        t1_up_deg = math.degrees(t1_up)
+        t2_up_deg = math.degrees(t2_up)
+        t1_down_deg = math.degrees(t1_down)
+        t2_down_deg = math.degrees(t2_down)
+
+        # Map to servo coordinates
+        servo1_up = t1_up_deg + self.servo1_offset
+        servo2_up = t2_up_deg + self.servo2_offset
+        servo1_down = t1_down_deg + self.servo1_offset
+        servo2_down = t2_down_deg + self.servo2_offset
+
+        # Check which solutions are valid
+        up_valid = self.is_servo_valid(servo1_up) and self.is_servo_valid(servo2_up)
+        down_valid = self.is_servo_valid(servo1_down) and self.is_servo_valid(servo2_down)
+
+        # Select the best solution
+        if up_valid and (prefer_elbow_up or not down_valid):
+            servo1, servo2 = servo1_up, servo2_up
+            config = 'elbow_up'
+        elif down_valid:
+            servo1, servo2 = servo1_down, servo2_down
+            config = 'elbow_down'
+        else:
+            # Neither solution valid - use preferred and clamp
+            if prefer_elbow_up:
+                servo1, servo2 = servo1_up, servo2_up
+                config = 'elbow_up'
+            else:
+                servo1, servo2 = servo1_down, servo2_down
+                config = 'elbow_down'
+
+        # Track if clamping is needed
+        needs_clamping = not (0 <= servo1 <= 180 and 0 <= servo2 <= 180)
+        
+        # Clamp to valid servo range
+        servo1_clamped = max(0, min(180, servo1))
+        servo2_clamped = max(0, min(180, servo2))
+
+        if warn_clamping and needs_clamping:
+            print(f"Warning: Target (x={x}, y={y}) requires clamping!")
+            print(f"  Unclamped: Servo1={servo1:.2f}°, Servo2={servo2:.2f}°")
+            print(f"  Clamped:   Servo1={servo1_clamped:.2f}°, Servo2={servo2_clamped:.2f}°")
+
+        return {
+            'target': (x, y),
+            'servo1': servo1_clamped,
+            'servo2': servo2_clamped,
+            'config': config,
+            'status': 'clamped' if needs_clamping else 'valid',
+            'clamped': needs_clamping,
+            'valid_configs': {
+                'elbow_up': up_valid,
+                'elbow_down': down_valid
+            }
+        }
+    
+    def map_to_servos(self, x_values, y_values, prefer_elbow_up=True, warn_clamping=True):
+        """
+        Computes the servo angles for a sequence of target coordinates
+        
+        Args:
+            x_values: List of target x-coordinates
+            y_values: List of target y-coordinates
+            prefer_elbow_up: If True, prefer elbow-up solution when both valid
+            warn_clamping: If True, print warnings when clamping occurs
+            
+        Returns:
+            list: List of dictionaries containing servo angles and metadata
+        """
+        if len(x_values) != len(y_values):
+            print("Error: x_values and y_values must have the same number of elements.")
+            return None
+
+        results = []
+
+        for i, (x, y) in enumerate(zip(x_values, y_values)):
+            result = self.solve(x, y, prefer_elbow_up, warn_clamping)
+            
+            if result is None:
+                results.append({
+                    'target': (x, y),
+                    'servo1': None,
+                    'servo2': None,
+                    'config': None,
+                    'status': 'unreachable',
+                    'clamped': False
+                })
+            else:
+                results.append(result)
+
+        return results
+    
+    def is_reachable(self, x, y):
+        """
+        Check if a point is within the robot's workspace
+        
+        Args:
+            x: Target x coordinate in mm
+            y: Target y coordinate in mm
+            
+        Returns:
+            True if reachable, False otherwise
+        """
+        distance = math.sqrt(x**2 + y**2)
+        return self.min_reach <= distance <= self.max_reach
