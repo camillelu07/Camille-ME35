@@ -1,0 +1,63 @@
+"""
+LED controller for light painting
+Controls the LED at the end effector of the robotic arm
+"""
+
+from machine import Pin
+
+class LEDController:
+    def __init__(self, led_pin):
+        """
+        Initialize LED controller
+        
+        Args:
+            led_pin: GPIO pin number for LED control
+        """
+        self.led = Pin(led_pin, Pin.OUT)
+        self.state = False
+        print(f"LED initialized on pin {led_pin}")
+    
+    def on(self):
+        """Turn LED on"""
+        self.led.value(1)
+        self.state = True
+    
+    def off(self):
+        """Turn LED off"""
+        self.led.value(0)
+        self.state = False
+    
+    def toggle(self):
+        """Toggle LED state"""
+        self.state = not self.state
+        self.led.value(1 if self.state else 0)
+    
+    def is_on(self):
+        """
+        Check if LED is on
+        
+        Returns:
+            True if LED is on, False otherwise
+        """
+        return self.state
+    
+    def blink(self, times=3, delay_ms=200):
+        """
+        Blink LED a specified number of times
+        
+        Args:
+            times: Number of blinks
+            delay_ms: Delay between blinks in milliseconds
+        """
+        import time
+        original_state = self.state
+        
+        for _ in range(times):
+            self.on()
+            time.sleep_ms(delay_ms)
+            self.off()
+            time.sleep_ms(delay_ms)
+        
+        # Restore original state
+        if original_state:
+            self.on()
