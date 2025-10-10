@@ -1,0 +1,243 @@
+"""
+Test and calibration script for 2-DOF robotic arm
+Use this to verify your setup before running the main program
+"""
+
+from kinematics import InverseKinematics
+from servo_controller import ServoController
+from led_controller import LEDController
+import time
+
+# Configuration (match your main.py settings)
+L1 = 95
+L2 = 88
+SERVO1_PIN = 4
+SERVO2_PIN = 5
+LED_PIN = 15
+SERVO1_OFFSET = 90
+SERVO2_OFFSET = 90
+
+def test_led():
+    """Test LED functionality"""
+    print("\n=== Testing LED ===")
+    led = LEDController(LED_PIN)
+    
+    print("Blinking LED 3 times...")
+    led.blink(times=3, delay_ms=200)
+    
+    print("LED on for 2 seconds...")
+    led.on()
+    time.sleep(2)
+    
+    print("LED off")
+    led.off()
+    print("LED test complete!")
+
+def test_servos():
+    """Test servo movement through range"""
+    print("\n=== Testing Servos ===")
+    servo_ctrl = ServoController(SERVO1_PIN, SERVO2_PIN)
+    
+    print("Moving to 0°...")
+    servo_ctrl.move_to_angles(0, 0)
+    time.sleep(1)
+    
+    print("Moving to 90°...")
+    servo_ctrl.move_to_angles(90, 90)
+    time.sleep(1)
+    
+    print("Moving to 180°...")
+    servo_ctrl.move_to_angles(180, 180)
+    time.sleep(1)
+    
+    print("Returning to center (90°)...")
+    servo_ctrl.center_servos()
+    time.sleep(1)
+    
+    servo_ctrl.deinit()
+    print("Servo test complete!")
+
+def test_kinematics():
+    """Test inverse kinematics calculations"""
+    print("\n=== Testing Kinematics ===")
+    ik = InverseKinematics(L1, L2, SERVO1_OFFSET, SERVO2_OFFSET)
+    
+    print(f"Arm lengths: L1={L1}mm, L2={L2}mm")
+    print(f"Servo offsets: S1={SERVO1_OFFSET}°, S2={SERVO2_OFFSET}°")
+    print(f"Max reach: {ik.max_reach}mm")
+    print(f"Min reach: {ik.min_reach}mm")
+    
+    # Test points
+    test_points = [
+        (100, 0),    # Along X-axis
+        (0, 100),    # Along Y-axis
+        (100, 100),  # Diagonal
+        (0, 165),    # From example data
+        (30, 174),   # From example data
+    ]
+    
+    print("\nTesting sample points:")
+    for x, y in test_points:
+        print(f"\nTarget: ({x}, {y})")
+        
+        if not ik.is_reachable(x, y):
+            print("  → UNREACHABLE!")
+            continue
+        
+        result = ik.solve(x, y, prefer_elbow_up=True, warn_clamping=False)
+        if result:
+            servo1 = result['servo1']
+            servo2 = result['servo2']
+            config = result['config']
+            status = result['status']
+            
+            print(f"  → Servo1={servo1:.2f}°, Servo2={servo2:.2f}°")
+            print(f"  → Configuration: {config}, Status: {status}")
+            
+            if result['clamped']:
+                print(f"  → WARNING: Angles were clamped!")
+    
+    print("\nKinematics test complete!")
+
+def test_led_behavior():
+    """Test LED on/off behavior during movement"""
+    print("\n=== Testing LED Behavior During Movement ===")
+    
+    ik = InverseKinematics(L1, L2, SERVO1_OFFSET, SERVO2_OFFSET)
+    servo_ctrl = ServoController(SERVO1_PIN, SERVO2_PIN)
+    led = LEDController(LED_PIN)
+    
+    # Test sequence: move to 3 points with LED behavior
+    test_sequence = [
+        (0, 140),
+        (30, 160),
+        (0, 140)
+    ]
+    
+    print(f"Testing {len(test_sequence)} point sequence...")
+    print("LED should be OFF during movement, ON at each point\n")
+    
+    for i, (x, y) in enumerate(test_sequence):
+        print(f"Point {i+1}: ({x}, {y})")
+        result = ik.solve(x, y)
+        
+        if result is None:
+            print("  → Unreachable, skipping")
+            continue
+        
+        # LED OFF during movement
+        print("  → LED OFF - Moving...")
+        led.off()
+        servo_ctrl.move_to_angles(result['servo1'], result['servo2'])
+        time.sleep(0.5)
+        
+        # LED ON at point
+        print("  → LED ON - Dwelling for 1.5s")
+        led.on()
+        time.sleep(1.5)
+    
+    # Cleanup
+    led.off()
+    servo_ctrl.move_to_angles(90, 90)
+    time.sleep(0.5)
+    servo_ctrl.deinit()
+    
+    print("\nLED behavior test complete!")
+
+def test_full_path():
+    """Test the complete path from example data"""
+    print("\n=== Testing Full Example Path ===")
+    
+    x_targets = [0, 7, 18, 30, 38, 34, 20, 0, -20, -34, -38, -30, -18, -7, 0]
+    y_targets = [165, 174, 180, 174, 162, 146, 138, 130, 138, 146, 162, 172, 180, 174, 165]
+    
+    ik = InverseKinematics(L1, L2, SERVO1_OFFSET, SERVO2_OFFSET)
+    
+    print(f"Computing angles for {len(x_targets)} points...")
+    path_solutions = ik.map_to_servos(x_targets, y_targets, 
+                                       prefer_elbow_up=True,
+                                       warn_clamping=True)
+    
+    if path_solutions:
+        print("\n" + "="*70)
+        print("PATH ANALYSIS")
+        print("="*70)
+        
+        valid = sum(1 for r in path_solutions if r['status'] == 'valid')
+        clamped = sum(1 for r in path_solutions if r['clamped'])
+        unreachable = sum(1 for r in path_solutions if r['status'] == 'unreachable')
+        
+        print(f"Valid points:       {valid}")
+        print(f"Clamped points:     {clamped}")
+        print(f"Unreachable points: {unreachable}")
+        print(f"Total points:       {len(path_solutions)}")
+        print("="*70)
+        
+        # Show first few and last few points
+        print("\nFirst 3 points:")
+        for i in range(min(3, len(path_solutions))):
+            r = path_solutions[i]
+            x, y = r['target']
+            if r['status'] != 'unreachable':
+                print(f"  {i}: ({x:6.1f}, {y:6.1f}) -> "
+                      f"S1={r['servo1']:6.2f}°, S2={r['servo2']:6.2f}°")
+            else:
+                print(f"  {i}: ({x:6.1f}, {y:6.1f}) -> UNREACHABLE")
+        
+        print("\nLast 3 points:")
+        for i in range(max(0, len(path_solutions)-3), len(path_solutions)):
+            r = path_solutions[i]
+            x, y = r['target']
+            if r['status'] != 'unreachable':
+                print(f"  {i}: ({x:6.1f}, {y:6.1f}) -> "
+                      f"S1={r['servo1']:6.2f}°, S2={r['servo2']:6.2f}°")
+            else:
+                print(f"  {i}: ({x:6.1f}, {y:6.1f}) -> UNREACHABLE")
+    
+    print("\nFull path test complete!")
+
+def main_menu():
+    """Interactive test menu"""
+    while True:
+        print("\n" + "="*70)
+        print("Robotic Arm Test Menu")
+        print("="*70)
+        print("1. Test LED")
+        print("2. Test Servos")
+        print("3. Test Kinematics (calculations only)")
+        print("4. Test LED Behavior (with movement)")
+        print("5. Test Full Example Path (analysis)")
+        print("6. Exit")
+        print("="*70)
+        
+        try:
+            choice = input("Select option (1-6): ").strip()
+            
+            if choice == "1":
+                test_led()
+            elif choice == "2":
+                test_servos()
+            elif choice == "3":
+                test_kinematics()
+            elif choice == "4":
+                test_led_behavior()
+            elif choice == "5":
+                test_full_path()
+            elif choice == "6":
+                print("Exiting...")
+                break
+            else:
+                print("Invalid choice. Please select 1-6.")
+        
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            break
+        except Exception as e:
+            print(f"Error: {e}")
+            import sys
+            sys.print_exception(e)
+
+if __name__ == "__main__":
+    print("Robotic Arm Testing & Calibration")
+    print("Make sure all connections are correct before proceeding!")
+    main_menu()
