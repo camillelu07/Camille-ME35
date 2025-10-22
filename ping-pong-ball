@@ -1,0 +1,185 @@
+ from machine import Pin, PWM
+import time
+
+# Motor 1 pins (Cytron Robo ESP32)
+MOTOR_PIN1 = PWM(Pin(12), freq=1000)
+MOTOR_PIN2 = PWM(Pin(13), freq=1000)
+
+# Encoder pins (Grove 3 - uses pins 26 and 25)
+ENCODER_A = Pin(26, Pin.IN, Pin.PULL_UP)
+ENCODER_B = Pin(25, Pin.IN, Pin.PULL_UP)
+
+# Button pin
+BUTTON_PIN = Pin(35, Pin.IN, Pin.PULL_UP)
+
+# Global encoder position counter
+encoder_position = 0
+target_position = 0
+
+# Motor speed parameters (0-1023 for PWM duty cycle)
+BASE_SPEED = 900  # Maximum motor speed
+MIN_SPEED = 600    # Higher minimum speed for faster approach
+
+def encoder_callback(pin):
+    """
+    Encoder interrupt callback for quadrature encoding
+    """
+    global encoder_position
+    
+    # Read both encoder channels
+    a_state = ENCODER_A.value()
+    b_state = ENCODER_B.value()
+    
+    # Determine direction (simple quadrature)
+    # If A leads B, increment (clockwise), else decrement (counter-clockwise)
+    if a_state == b_state:
+        encoder_position += 1
+    else:
+        encoder_position -= 1
+
+def motor_forward(speed):
+    """
+    Rotate motor forward (clockwise) with PWM speed control
+    speed: 0-1023
+    """
+    MOTOR_PIN1.duty(speed)
+    MOTOR_PIN2.duty(0)
+
+def motor_backward(speed):
+    """
+    Rotate motor backward (counter-clockwise) with PWM speed control
+    speed: 0-1023
+    """
+    MOTOR_PIN1.duty(0)
+    MOTOR_PIN2.duty(speed)
+
+def motor_stop():
+    """
+    Stop motor smoothly
+    """
+    MOTOR_PIN1.duty(0)
+    MOTOR_PIN2.duty(0)
+
+def smooth_rotate_to_position(target_ticks):
+    """
+    Rotate motor smoothly to a specific encoder position with speed ramping
+    target_ticks: target encoder count to reach
+    """
+    global encoder_position, target_position
+    
+    target_position = target_ticks
+    
+    print(f"Moving to position: {target_ticks}")
+    
+    while True:
+        error = target_position - encoder_position
+        
+        # If we're close enough, stop
+        if abs(error) < 2:  # Tighter tolerance for better accuracy
+            motor_stop()
+            print(f"Reached position: {encoder_position}")
+            break
+        
+        # Calculate speed based on distance to target (proportional control)
+        # Speed ramps down as we approach the target
+        distance = abs(error)
+        
+        if distance > 150:
+            # Far from target - use maximum speed
+            speed = BASE_SPEED
+        elif distance > 30:
+            # Medium distance - still fast
+            speed = int(BASE_SPEED * 0.85)
+        else:
+            # Close to target - ramp down speed proportionally
+            speed = int(MIN_SPEED + (BASE_SPEED * 0.7 - MIN_SPEED) * (distance / 30))
+            speed = max(MIN_SPEED, speed)
+        
+        # Move in the correct direction with calculated speed
+        if error > 0:
+            motor_forward(speed)
+        else:
+            motor_backward(speed)
+        
+        time.sleep(0.001)
+    
+    motor_stop()
+    time.sleep(0.08)  # Shorter pause for faster operation
+
+def setup():
+    """
+    Initialize system
+    """
+    print("=" * 50)
+    print("ESP32 Smooth Motor 180° Rotation Control")
+    print("Cytron Robo ESP32")
+    print("=" * 50)
+    
+    # Stop motor initially
+    motor_stop()
+    
+    # Attach interrupt to encoder A channel
+    ENCODER_A.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=encoder_callback)
+    
+    print("System initialized with PWM speed control!")
+    print(f"Initial encoder position: {encoder_position}")
+    print(f"Base speed: {BASE_SPEED}, Min speed: {MIN_SPEED}")
+    print()
+
+def main():
+    """
+    Main program - wait for button press to trigger rotation
+    """
+    global encoder_position
+    
+    setup()
+    
+    # Calculate encoder ticks for 180 degrees
+    # TT Geared Motor with Encoder (6V 160RPM 120:1 L Shape)
+    # Adjusted based on testing - 900 ticks gives accurate 180° rotation
+    TICKS_PER_180_DEGREES = 900
+    
+    print("Waiting for button press on D35...")
+    print("Press the button to start 180° rotation sequence")
+    print("Press Ctrl+C to exit\n")
+    
+    try:
+        while True:
+            # Check if button is pressed (LOW when pressed due to pull-up)
+            if BUTTON_PIN.value() == 0:
+                print("\n🔘 Button pressed! Starting rotation sequence...")
+                time.sleep(0.2)  # Debounce delay
+                
+                start_position = encoder_position
+                print(f"Start position: {start_position}")
+                
+                # Step 1: Rotate 180 degrees forward
+                print("\n--- Step 1: Rotating 180° forward ---")
+                smooth_rotate_to_position(start_position + TICKS_PER_180_DEGREES)
+                time.sleep(0.1)
+                
+                # Step 2: Rotate 180 degrees backward
+                print("\n--- Step 2: Rotating 180° backward ---")
+                smooth_rotate_to_position(start_position)
+                time.sleep(0.1)
+                
+                print(f"\n✓ Sequence complete!")
+                print(f"Start position: {start_position}")
+                print(f"Final position: {encoder_position}")
+                print(f"Position error: {encoder_position - start_position} ticks")
+                print("\nWaiting for next button press...\n")
+                
+                # Wait for button release
+                while BUTTON_PIN.value() == 0:
+                    time.sleep(0.01)
+                time.sleep(0.2)  # Extra debounce after release
+            
+            time.sleep(0.01)  # Small delay to reduce CPU usage
+        
+    except KeyboardInterrupt:
+        motor_stop()
+        print("\n\nProgram interrupted by user")
+        print(f"Final encoder position: {encoder_position}")
+
+if __name__ == '__main__':
+    main()
