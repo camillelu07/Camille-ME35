@@ -1,0 +1,457 @@
+import network
+import time
+from umqtt.simple import MQTTClient
+import ssl
+import secrets
+import neopixel
+import json
+from machine import Pin, PWM
+
+class MQTTMotorRobot:
+    def __init__(self):
+        self.SSID = secrets.SSID
+        self.PASSWORD = secrets.PWD
+        
+        # Neopixel initialize
+        self.np = neopixel.NeoPixel(Pin(15), 2)
+        
+        # MQTT settings
+        self.MQTT_BROKER = secrets.mqtt_url 
+        self.MQTT_PORT = 8883
+        self.MQTT_USERNAME = secrets.mqtt_username 
+        self.MQTT_PASSWORD = secrets.mqtt_password 
+        self.CLIENT_ID = "motor_robot"
+        self.TOPIC_SUB = "/ME35/control"
+        
+        # Motor pins - Cytron uses two PWM pins per motor for direction control
+        # Left motor (M1)
+        self.motor_left_pin1 = 12  # M1A
+        self.motor_left_pin2 = 13  # M1B
+        
+        # Right motor (M2)
+        self.motor_right_pin1 = 14  # M2A
+        self.motor_right_pin2 = 27  # M2B
+        
+        # Store PWM objects
+        self.motor_left_pwm1 = None
+        self.motor_left_pwm2 = None
+        self.motor_right_pwm1 = None
+        self.motor_right_pwm2 = None
+        
+        # Servo pin (use PWM for servo control)
+        self.servo = PWM(Pin(4), freq=50)  # 50Hz for servo
+        
+        # HC-SR04 Ultrasonic sensor pins
+        self.trig = Pin(22, Pin.OUT)
+        self.echo = Pin(21, Pin.IN)
+        
+        # Buzzer pin
+        self.buzzer_pin = 23
+        self.buzzer_pwm = None
+        
+        # Sensor monitoring state
+        self.sensor_active = False
+        self.monitoring_duration = 10  # Monitor for 10 seconds
+        
+        self.client = None  # Initialize client
+        
+        # Initialize everything off
+        self.stop_motors()
+        self.buzzer_off()
+        self.servo_to_position(0)  # Start at 0 degrees
+        
+        print("Robot initialized - motors stopped")
+    
+    def buzzer_off(self):
+        """Turn off buzzer and deinitialize PWM"""
+        if self.buzzer_pwm:
+            self.buzzer_pwm.deinit()
+            self.buzzer_pwm = None
+        Pin(self.buzzer_pin, Pin.OUT).value(0)
+    
+    def play_tone(self, frequency, duration_ms):
+        """Play a tone at a specific frequency for a duration"""
+        if self.buzzer_pwm:
+            self.buzzer_pwm.deinit()
+        self.buzzer_pwm = PWM(Pin(self.buzzer_pin), freq=frequency, duty=512)
+        time.sleep_ms(duration_ms)
+        self.buzzer_off()
+    
+    def walle_sound(self):
+        """Play a Wall-E style sound (cute robot beep pattern)"""
+        print("Playing Wall-E sound...")
+        
+        # Wall-E style sound: rising tone pattern
+        # "Waaall-E" sound effect
+        self.play_tone(400, 200)   # "Waa"
+        time.sleep_ms(50)
+        self.play_tone(600, 150)   # "ll"
+        time.sleep_ms(100)
+        self.play_tone(500, 300)   # "E" with slight drop
+    
+    def stop_motors(self):
+        """Completely stop both motors and deinitialize PWM"""
+        # Deinitialize all PWM objects
+        if self.motor_left_pwm1:
+            self.motor_left_pwm1.deinit()
+            self.motor_left_pwm1 = None
+        if self.motor_left_pwm2:
+            self.motor_left_pwm2.deinit()
+            self.motor_left_pwm2 = None
+        if self.motor_right_pwm1:
+            self.motor_right_pwm1.deinit()
+            self.motor_right_pwm1 = None
+        if self.motor_right_pwm2:
+            self.motor_right_pwm2.deinit()
+            self.motor_right_pwm2 = None
+        
+        # Set all pins to low
+        Pin(self.motor_left_pin1, Pin.OUT).value(0)
+        Pin(self.motor_left_pin2, Pin.OUT).value(0)
+        Pin(self.motor_right_pin1, Pin.OUT).value(0)
+        Pin(self.motor_right_pin2, Pin.OUT).value(0)
+    
+    def set_left_motor(self, speed, direction):
+        """
+        Control left motor
+        speed: 0-100 (percentage)
+        direction: 1 for forward, -1 for backward, 0 for stop
+        """
+        # First deinitialize any existing PWM on these pins
+        if self.motor_left_pwm1:
+            self.motor_left_pwm1.deinit()
+            self.motor_left_pwm1 = None
+        if self.motor_left_pwm2:
+            self.motor_left_pwm2.deinit()
+            self.motor_left_pwm2 = None
+        
+        if direction == 0 or speed == 0:
+            Pin(self.motor_left_pin1, Pin.OUT).value(0)
+            Pin(self.motor_left_pin2, Pin.OUT).value(0)
+        elif direction == 1:  # Forward
+            # Create PWM on pin1, pin2 low
+            self.motor_left_pwm1 = PWM(Pin(self.motor_left_pin1), freq=1000)
+            self.motor_left_pwm1.duty(int(speed * 10.23))  # Convert 0-100 to 0-1023
+            Pin(self.motor_left_pin2, Pin.OUT).value(0)
+        else:  # Backward (direction == -1)
+            # Create PWM on pin2, pin1 low
+            Pin(self.motor_left_pin1, Pin.OUT).value(0)
+            self.motor_left_pwm2 = PWM(Pin(self.motor_left_pin2), freq=1000)
+            self.motor_left_pwm2.duty(int(speed * 10.23))  # Convert 0-100 to 0-1023
+    
+    def set_right_motor(self, speed, direction):
+        """
+        Control right motor
+        speed: 0-100 (percentage)
+        direction: 1 for forward, -1 for backward, 0 for stop
+        """
+        # First deinitialize any existing PWM on these pins
+        if self.motor_right_pwm1:
+            self.motor_right_pwm1.deinit()
+            self.motor_right_pwm1 = None
+        if self.motor_right_pwm2:
+            self.motor_right_pwm2.deinit()
+            self.motor_right_pwm2 = None
+        
+        if direction == 0 or speed == 0:
+            Pin(self.motor_right_pin1, Pin.OUT).value(0)
+            Pin(self.motor_right_pin2, Pin.OUT).value(0)
+        elif direction == 1:  # Forward
+            # Create PWM on pin1, pin2 low
+            self.motor_right_pwm1 = PWM(Pin(self.motor_right_pin1), freq=1000)
+            self.motor_right_pwm1.duty(int(speed * 10.23))  # Convert 0-100 to 0-1023
+            Pin(self.motor_right_pin2, Pin.OUT).value(0)
+        else:  # Backward (direction == -1)
+            # Create PWM on pin2, pin1 low
+            Pin(self.motor_right_pin1, Pin.OUT).value(0)
+            self.motor_right_pwm2 = PWM(Pin(self.motor_right_pin2), freq=1000)
+            self.motor_right_pwm2.duty(int(speed * 10.23))  # Convert 0-100 to 0-1023
+    
+    def measure_distance(self):
+        """
+        Measure distance using HC-SR04 ultrasonic sensor
+        Returns distance in centimeters
+        """
+        try:
+            # Ensure trigger is low
+            self.trig.value(0)
+            time.sleep_us(2)
+            
+            # Send 10us pulse to trigger
+            self.trig.value(1)
+            time.sleep_us(10)
+            self.trig.value(0)
+            
+            # Wait for echo to go high (pulse start) with timeout
+            pulse_start = time.ticks_us()
+            timeout_counter = 0
+            while self.echo.value() == 0:
+                timeout_counter += 1
+                if timeout_counter > 10000:  # Approximately 10ms
+                    return -1
+            pulse_start = time.ticks_us()
+            
+            # Wait for echo to go low (pulse end) with timeout
+            pulse_end = pulse_start
+            timeout_counter = 0
+            while self.echo.value() == 1:
+                timeout_counter += 1
+                if timeout_counter > 20000:  # Approximately 20ms
+                    return -1
+                pulse_end = time.ticks_us()
+            
+            # Calculate distance
+            pulse_duration = time.ticks_diff(pulse_end, pulse_start)
+            
+            # Validate pulse duration (2cm to 400cm)
+            if pulse_duration < 116 or pulse_duration > 23200:
+                return -1
+            
+            # Speed of sound = 343 m/s = 0.0343 cm/us
+            # Distance = (pulse_duration * 0.0343) / 2
+            distance = (pulse_duration * 0.0343) / 2
+            
+            return distance
+        except Exception as e:
+            print(f"Distance measurement exception: {e}")
+            return -1
+    
+    def activate_sensor_monitoring(self):
+        """
+        Activate ultrasonic sensor monitoring for a set duration
+        Plays Wall-E sound when object is within 50cm (0.5 meters)
+        """
+        print("*** ACTIVATING ULTRASONIC SENSOR MONITORING ***")
+        self.sensor_active = True
+        start_time = time.time()
+        
+        self.np[0] = (255, 255, 0)  # Yellow indicator for monitoring
+        self.np.write()
+        
+        error_count = 0
+        last_alert = False  # Track if we were in alert state
+        
+        while time.time() - start_time < self.monitoring_duration:
+            distance = self.measure_distance()
+            
+            if distance > 0 and distance < 400:  # Valid reading (within 4 meters)
+                error_count = 0  # Reset error count on successful reading
+                print(f"Distance: {distance:.1f} cm")
+                
+                if distance < 27:  # Within 0.27 meters (27 cm)
+                    # Object detected - play Wall-E sound
+                    if not last_alert:  # Only play sound when first entering alert zone
+                        self.np[0] = (0, 255, 255)  # Red for alert
+                        self.np.write()
+                        print("ALERT: Object detected within 0.5m!")
+                        self.walle_sound()
+                        last_alert = True
+                else:
+                    # No object close
+                    if last_alert:  # Just exited alert zone
+                        self.np[0] = (0, 255, 0)  # Green for safe
+                        self.np.write()
+                        last_alert = False
+            else:
+                error_count += 1
+                if error_count < 3:  # Only print first few errors
+                    print("Distance measurement error (retrying...)")
+            
+            time.sleep(0.3)  # Check ~3 times per second
+        
+        # Monitoring period ended
+        self.buzzer_off()
+        self.sensor_active = False
+        self.np[0] = (0, 0, 0)
+        self.np.write()
+        print("Sensor monitoring deactivated")
+    
+    def servo_to_position(self, angle):
+        """
+        Move servo to specific angle (0-180 degrees)
+        Servo pulse width: 0.5ms (0°) to 2.5ms (180°)
+        At 50Hz: period = 20ms = 1024 duty cycle units
+        """
+        # Convert angle to duty cycle
+        # 0° = 26 (0.5ms), 180° = 128 (2.5ms)
+        duty = int(26 + (angle / 180) * 102)
+        self.servo.duty(duty)
+    
+    def rotate_servo_and_back(self):
+        """Rotate servo to 120° and back to 0°"""
+        print("Rotating servo to 120°")
+        self.servo_to_position(120)
+        self.np[0] = (0, 255, 0)  # Green indicator
+        self.np.write()
+        time.sleep(1)  # Wait at 120°
+        
+        print("Rotating servo back to 0°")
+        self.servo_to_position(0)
+        self.np[0] = (0, 0, 0)
+        self.np.write()
+    
+    def motors_opposite_direction(self):
+        """
+        Single press: Right motor forward, left motor backward at same speed for 3 seconds
+        """
+        print("*** STARTING MOTORS - SINGLE PRESS ***")
+        print("Right motor forward, Left motor backward")
+        speed = 70  # 70% speed
+        
+        # Right motor forward
+        print(f"Setting RIGHT motor: FORWARD, speed={speed}%")
+        self.set_right_motor(speed, 1)
+        
+        # Left motor forward
+        print(f"Setting LEFT motor: FORWARD, speed={speed}%")
+        self.set_left_motor(speed, -1)
+        
+        self.np[0] = (255, 0, 255)  # Magenta indicator
+        self.np.write()
+        
+        # Run for 3 seconds
+        print("Running for 3 seconds...")
+        time.sleep(3)
+        
+        # Stop motors
+        print("Stopping motors")
+        self.stop_motors()
+        self.np[0] = (0, 0, 0)
+        self.np.write()
+        print("Motors stopped")
+        time.sleep(1)
+        # Right motor backward
+        print(f"Setting RIGHT motor: BACKWARD, speed={speed}%")
+        self.set_right_motor(speed, -1)
+        
+        # Left motor backward
+        print(f"Setting LEFT motor: BACKWARD, speed={speed}%")
+        self.set_left_motor(speed, 1)
+        
+        self.np[0] = (255, 128, 0)  # Orange indicator
+        self.np.write()
+        
+        # Run for 3 seconds
+        print("Running for 3 seconds...")
+        time.sleep(3)
+        
+        # Stop motors
+        print("Stopping motors")
+        self.stop_motors()
+        self.np[0] = (0, 0, 0)
+        self.np.write()
+        print("Motors stopped")
+    
+    def motors_opposite_direction_reverse(self):
+        """
+        Double press: Right motor backward, left motor forward at same speed for 3 seconds
+        (Opposite of single press)
+        """
+        print("*** STARTING MOTORS - DOUBLE PRESS ***")
+        print("Right motor backward, Left motor forward")
+        speed = 70  # 70% speed
+        
+        # Right motor forward
+        print(f"Setting RIGHT motor: FORWARD, speed={speed}%")
+        self.set_right_motor(speed, 1)
+        
+        # Left motor backward
+        print(f"Setting LEFT motor: BACKWARD, speed={speed}%")
+        self.set_left_motor(speed, 1)
+        
+        self.np[0] = (255, 128, 0)  # Orange indicator
+        self.np.write()
+        
+        # Run for 3 seconds
+        print("Running for 3 seconds...")
+        time.sleep(16)
+        
+        # Stop motors
+        print("Stopping motors")
+        self.stop_motors()
+        self.np[0] = (0, 0, 0)
+        self.np.write()
+        print("Motors stopped")
+    
+    def connect_wifi(self):
+        self.wlan = network.WLAN(network.STA_IF)
+        self.wlan.active(True)
+        if not self.wlan.isconnected():
+            print("Connecting to WiFi...")
+            self.wlan.connect(self.SSID, self.PASSWORD)
+            timeout = 10
+            while not self.wlan.isconnected() and timeout > 0:
+                time.sleep(1)
+                timeout -= 1
+        
+        if self.wlan.isconnected():
+            print("WiFi Connected! IP:", self.wlan.ifconfig()[0])
+            return True
+        else:
+            print("WiFi connection failed!")
+            return False
+    
+    def sub_cb(self, topic, msg):
+        print(f"\n*** MQTT MESSAGE RECEIVED ***")
+        print(f"Topic: {topic.decode()}")
+        print(f"Message: {msg.decode()}")
+        
+        try:
+            command = json.loads(msg)
+            action = command.get("action", "")
+            print(f"Action: {action}")
+            
+            if action == "motors_opposite":
+                self.motors_opposite_direction()
+            elif action == "motors_opposite_reverse":
+                self.motors_opposite_direction_reverse()
+            elif action == "servo_rotate":
+                self.rotate_servo_and_back()
+            elif action == "activate_sensor":
+                self.activate_sensor_monitoring()
+            else:
+                print(f"Unknown action: {action}")
+            
+        except Exception as e:
+            print(f"Error processing command: {e}")
+    
+    def mqtt_connect(self):
+        try:
+            self.client = MQTTClient(
+                client_id=self.CLIENT_ID,
+                server=self.MQTT_BROKER,
+                port=self.MQTT_PORT,
+                user=self.MQTT_USERNAME,
+                password=self.MQTT_PASSWORD,
+                ssl=True,
+                ssl_params={'server_hostname': self.MQTT_BROKER}
+            )
+            self.client.set_callback(self.sub_cb)
+            self.client.connect()
+            self.client.subscribe(self.TOPIC_SUB)
+            print("MQTT Connected and subscribed successfully!")
+            print(f"Subscribed to topic: {self.TOPIC_SUB}")
+            return True
+        except OSError as e:
+            print(f"MQTT Connection failed: {e}")
+            return False
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            return False
+
+# Main execution
+robot = MQTTMotorRobot()
+if robot.connect_wifi():
+    if robot.mqtt_connect():
+        print("System ready - waiting for commands...")
+        
+        while True:
+            try:
+                robot.client.check_msg()
+                time.sleep(0.05)
+            except Exception as e:
+                print(f"Checking message failed: {e}")
+    else:
+        print("MQTT connection failed!")
+else:
+    print("WiFi connection failed!")
