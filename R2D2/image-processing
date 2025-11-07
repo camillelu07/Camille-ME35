@@ -1,0 +1,211 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import serial
+import time
+
+# --- Configuration ---
+CAMERA_INDEX = 0
+WINDOW_NAME = "R2D2 Hand Tracker"
+SERIAL_PORT = '/dev/cu.usbserial-0001'  # Change to your ESP32's port
+BAUD_RATE = 115200
+STEP_INCREMENT = 10   # Base steps - will be scaled down on ESP32
+COMMAND_DELAY = 0.05  # Delay between commands (seconds) to prevent overwhelming ESP32
+LAST_GESTURE = ""
+last_command_time = 0
+
+# Initialize Serial Connection
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1, write_timeout=0.1)
+    print(f"Serial port {SERIAL_PORT} opened successfully.")
+    time.sleep(2)
+except serial.SerialException as e:
+    print(f"Error opening serial port: {e}")
+    ser = None
+
+# Initialize MediaPipe Hands
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(
+    model_complexity=1,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.5
+)
+mp_draw = mp.solutions.drawing_utils
+
+TIP_IDS = [mp_hands.HandLandmark.THUMB_TIP, mp_hands.HandLandmark.INDEX_FINGER_TIP,
+           mp_hands.HandLandmark.MIDDLE_FINGER_TIP, mp_hands.HandLandmark.RING_FINGER_TIP,
+           mp_hands.HandLandmark.PINKY_TIP]
+BASE_IDS = [mp_hands.HandLandmark.THUMB_IP, mp_hands.HandLandmark.INDEX_FINGER_PIP,
+            mp_hands.HandLandmark.MIDDLE_FINGER_PIP, mp_hands.HandLandmark.RING_FINGER_PIP,
+            mp_hands.HandLandmark.PINKY_PIP]
+
+def is_finger_up(hand_landmarks, finger_index):
+    tip_y = hand_landmarks.landmark[TIP_IDS[finger_index]].y
+    base_y = hand_landmarks.landmark[BASE_IDS[finger_index]].y
+    return tip_y < base_y
+
+def recognize_gesture(hand_landmarks, handedness):
+    finger_status = [is_finger_up(hand_landmarks, i) for i in range(5)]
+    thumb_up, index_up, middle_up, ring_up, pinky_up = finger_status
+    all_others_down = not (index_up or middle_up or ring_up or pinky_up)
+    
+    if thumb_up and all(finger_status[1:]): 
+        return "🖐️ HIGH FIVE"
+    if index_up and middle_up and not ring_up and not pinky_up: 
+        return "✌️ PEACE"
+    
+    wrist_y = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST].y
+    thumb_tip_y = hand_landmarks.landmark[TIP_IDS[0]].y
+    is_thumb_down = thumb_tip_y > wrist_y and not thumb_up
+    if is_thumb_down and all_others_down: 
+        return "👎 THUMBS DOWN"
+    
+    if thumb_up and all_others_down: 
+        return "👍 THUMBS UP"
+    
+    three_straight_up = middle_up and ring_up and pinky_up
+    index_tip_lm = hand_landmarks.landmark[TIP_IDS[1]]
+    thumb_tip_lm = hand_landmarks.landmark[TIP_IDS[0]]
+    distance = np.sqrt((index_tip_lm.x - thumb_tip_lm.x)**2 + (index_tip_lm.y - thumb_tip_lm.y)**2)
+    if three_straight_up and distance < 0.07: 
+        return "👌 OK"
+
+    return "Tracking..."
+
+def send_command(command):
+    """Send command with rate limiting"""
+    global last_command_time
+    
+    current_time = time.time()
+    if current_time - last_command_time < COMMAND_DELAY:
+        return  # Skip command if too soon
+    
+    if ser:
+        try:
+            ser.write(f"{command}\n".encode('utf-8'))
+            last_command_time = current_time
+        except serial.SerialTimeoutException:
+            print("Serial write timeout - ESP32 may be busy")
+        except Exception as e:
+            print(f"Serial error: {e}")
+
+def process_hand_and_send_command(hand_landmarks, image_width):
+    """Calculate motor steps based on hand position and send command"""
+    global LAST_GESTURE
+
+    # Calculate Hand Center (Use wrist)
+    wrist_lm = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
+    center_x = wrist_lm.x * image_width
+
+    # Define center zone (40%-60% of screen)
+    CENTER_LEFT = image_width * 0.3
+    CENTER_RIGHT = image_width * 0.7
+    CENTER_MID = image_width * 0.5
+
+    command = ""
+
+    if center_x < CENTER_LEFT:
+        # Hand is on the LEFT - calculate distance from left boundary
+        distance = CENTER_LEFT - center_x
+        max_distance = CENTER_LEFT  # Maximum possible distance
+        
+        # Proportional steps: closer to center = fewer steps
+        # Scale from 1 to 10 steps based on distance
+        steps = max(1, min(10, int((distance / max_distance) * 10)))
+        command = f"MOTOR_LEFT_{steps}"
+        
+    elif center_x > CENTER_RIGHT:
+        # Hand is on the RIGHT - calculate distance from right boundary
+        distance = center_x - CENTER_RIGHT
+        max_distance = image_width - CENTER_RIGHT  # Maximum possible distance
+        
+        # Proportional steps: closer to center = fewer steps
+        steps = max(1, min(10, int((distance / max_distance) * 10)))
+        command = f"MOTOR_RIGHT_{steps}"
+        
+    else:
+        # Hand is in the CENTER
+        command = "MOTOR_STOP"
+
+    # Gesture Command (overrides basic follow)
+    gesture = recognize_gesture(hand_landmarks, "")
+    
+    if gesture not in ["Tracking...", LAST_GESTURE]:
+        LAST_GESTURE = gesture
+        if "THUMBS UP" in gesture:
+            command = "SOUND_POSITIVE"
+        elif "THUMBS DOWN" in gesture:
+            command = "SOUND_NEGATIVE"
+        elif "HIGH FIVE" in gesture:
+            command = "SOUND_ACTION"
+
+    # Send command with rate limiting
+    send_command(command)
+    
+    return gesture
+
+# Main Video Loop
+def recognize_gesture_video():
+    global LAST_GESTURE
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    if not cap.isOpened():
+        print(f"Error: Could not open webcam at index {CAMERA_INDEX}.")
+        return
+
+    print("R2D2 Hand Tracker started! Press 'q' to quit.")
+    
+    image_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    
+    try:
+        while cap.isOpened():
+            success, image = cap.read()
+            if not success:
+                continue
+
+            image = cv2.flip(image, 1)
+            
+            # Draw center zone lines
+            CENTER_LEFT = int(image_width * 0.3)
+            CENTER_RIGHT = int(image_width * 0.7)
+            cv2.line(image, (CENTER_LEFT, 0), (CENTER_LEFT, image.shape[0]), (0, 255, 255), 2)
+            cv2.line(image, (CENTER_RIGHT, 0), (CENTER_RIGHT, image.shape[0]), (0, 255, 255), 2)
+            
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            image.flags.writeable = False
+            results = hands.process(image_rgb)
+            image.flags.writeable = True
+
+            gesture_text = "No Hand Detected"
+
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    gesture_text = process_hand_and_send_command(hand_landmarks, image_width)
+                    
+                    mp_draw.draw_landmarks(
+                        image,
+                        hand_landmarks,
+                        mp_hands.HAND_CONNECTIONS
+                    )
+            else:
+                send_command("MOTOR_STOP")
+                LAST_GESTURE = ""
+                last_hand_position = None  # Reset position when hand is gone
+                
+            cv2.putText(image, gesture_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            cv2.imshow(WINDOW_NAME, image)
+            
+            if cv2.waitKey(5) & 0xFF == ord('q'):
+                break
+
+    except KeyboardInterrupt:
+        print("\nStopping...")
+    finally:
+        send_command("MOTOR_STOP")
+        cap.release()
+        cv2.destroyAllWindows()
+        if ser:
+            ser.close()
+            print("Serial port closed.")
+
+if __name__ == "__main__":
+    recognize_gesture_video()
