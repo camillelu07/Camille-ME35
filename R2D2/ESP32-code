@@ -1,0 +1,169 @@
+from machine import Pin
+import sys
+import select
+import time
+
+# ========== SPEED TUNING ==========
+# Adjust this value to change motor speed
+# Lower value = faster rotation
+# Higher value = slower rotation
+# Recommended range: 2-20 ms
+# Start with 5ms and adjust as needed
+STEP_DELAY_MS = 3  # Reduced for faster response
+
+# ========== SENSITIVITY TUNING ==========
+# Fraction of steps to actually execute (reduces overshooting)
+# 1.0 = execute all steps, 0.5 = execute half, 0.25 = execute quarter
+STEP_FRACTION = 0.1  # Only execute 30% of commanded steps
+# ======================================
+
+# Pin assignments based on your wiring
+# Motor 1 (Coil A): Green and Black
+pin_a1 = Pin(27, Pin.OUT)  # Green
+pin_a2 = Pin(14, Pin.OUT)  # Black
+
+# Motor 2 (Coil B): Red and Blue
+pin_b1 = Pin(13, Pin.OUT)  # Red
+pin_b2 = Pin(12, Pin.OUT)  # Blue
+
+# No UART initialization needed - using USB serial (sys.stdin)
+
+# Step sequence for bipolar stepper (full step)
+step_sequence = [
+    [1, 0, 1, 0],  # Step 0
+    [0, 1, 1, 0],  # Step 1
+    [0, 1, 0, 1],  # Step 2
+    [1, 0, 0, 1],  # Step 3
+]
+
+def set_step(step):
+    """Set the motor pins according to the step sequence"""
+    pin_a1.value(step[0])
+    pin_a2.value(step[1])
+    pin_b1.value(step[2])
+    pin_b2.value(step[3])
+
+def rotate_motor(steps, clockwise=True):
+    """
+    Rotate the motor a specified number of steps
+    
+    Args:
+        steps: Number of steps to rotate
+        clockwise: True for CW (right), False for CCW (left)
+    """
+    for _ in range(steps):
+        for i in range(4):
+            if clockwise:
+                step_index = i
+            else:
+                step_index = 3 - i
+            
+            set_step(step_sequence[step_index])
+            time.sleep_ms(STEP_DELAY_MS)
+
+def stop_motor():
+    """Turn off all coils to release the motor"""
+    pin_a1.value(0)
+    pin_a2.value(0)
+    pin_b1.value(0)
+    pin_b2.value(0)
+
+def play_sound(sound_type):
+    """
+    Play different sounds/patterns based on gesture
+    You can add buzzer code here or LED patterns
+    """
+    print(f"Sound/Action: {sound_type}")
+    # TODO: Add your buzzer/LED code here
+    # Example:
+    # if sound_type == "POSITIVE":
+    #     buzzer.freq(1000)
+    #     buzzer.duty(512)
+    #     time.sleep_ms(200)
+    #     buzzer.duty(0)
+
+def process_command(command):
+    """Process commands received from the camera computer"""
+    command = command.strip()
+    
+    if command.startswith("MOTOR_LEFT_"):
+        # Extract step count and apply fraction to reduce overshooting
+        steps = int(command.split("_")[2])
+        adjusted_steps = max(1, int(steps * STEP_FRACTION))  # At least 1 step
+        print(f"Moving LEFT {adjusted_steps} steps (from {steps})")
+        rotate_motor(adjusted_steps, clockwise=True)  # Swapped: left = CW
+        
+    elif command.startswith("MOTOR_RIGHT_"):
+        # Extract step count and apply fraction to reduce overshooting
+        steps = int(command.split("_")[2])
+        adjusted_steps = max(1, int(steps * STEP_FRACTION))  # At least 1 step
+        print(f"Moving RIGHT {adjusted_steps} steps (from {steps})")
+        rotate_motor(adjusted_steps, clockwise=False)  # Swapped: right = CCW
+        
+    elif command == "MOTOR_STOP":
+        # Stop and release motor
+        stop_motor()
+        
+    elif command == "SOUND_POSITIVE":
+        # Thumbs up detected
+        print("👍 Thumbs Up!")
+        play_sound("POSITIVE")
+        
+    elif command == "SOUND_NEGATIVE":
+        # Thumbs down detected
+        print("👎 Thumbs Down!")
+        play_sound("NEGATIVE")
+        
+    elif command == "SOUND_ACTION":
+        # High five detected
+        print("🖐️ High Five!")
+        play_sound("ACTION")
+        
+    else:
+        print(f"Unknown command: {command}")
+
+# Main program
+print("R2D2 Head Control System Starting...")
+print("Waiting for commands from camera...")
+print(f"Step fraction: {STEP_FRACTION} (adjust to tune sensitivity)")
+print("Commands format: MOTOR_LEFT_10, MOTOR_RIGHT_10, MOTOR_STOP, SOUND_xxx")
+
+# Buffer for incoming serial data
+command_buffer = ""
+
+# Set up polling for stdin
+poll = select.poll()
+poll.register(sys.stdin, select.POLLIN)
+
+try:
+    while True:
+        # Check if data is available on USB serial with shorter timeout
+        events = poll.poll(1)  # 1ms timeout for faster response
+        
+        if events:
+            try:
+                # Read one character at a time
+                char = sys.stdin.read(1)
+                
+                if char:
+                    command_buffer += char
+                    
+                    # Process complete commands (terminated by newline)
+                    if '\n' in command_buffer:
+                        # Split on newline
+                        line, command_buffer = command_buffer.split('\n', 1)
+                        
+                        # Process the command
+                        if line.strip():
+                            process_command(line)
+            except Exception as e:
+                print(f"Error reading: {e}")
+                command_buffer = ""
+        
+        # Very small delay
+        time.sleep_ms(1)
+
+except KeyboardInterrupt:
+    print("\nStopping R2D2 head control...")
+    stop_motor()
+    print("Motor stopped. Program ended.")
