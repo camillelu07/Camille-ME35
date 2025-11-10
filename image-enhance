@@ -1,0 +1,299 @@
+import cv2
+import numpy as np
+
+def dramatic_enhancement(frame):
+    """
+    Creates a dramatic color-enhanced version with HDR-like effect
+    """
+    # Convert to float for processing
+    img_float = frame.astype(np.float32) / 255.0
+    
+    # Apply bilateral filter for smoothing
+    bilateral = cv2.bilateralFilter(img_float, 9, 0.1, 10)
+    
+    # Detail enhancement using unsharp masking
+    gaussian = cv2.GaussianBlur(bilateral, (0, 0), 2.0)
+    enhanced = cv2.addWeighted(bilateral, 1.8, gaussian, -0.8, 0)
+    
+    # Boost saturation significantly
+    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.8, 0, 1)  # Saturation boost
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 1.2, 0, 1)  # Brightness boost
+    result = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    
+    # Increase contrast
+    result = np.clip((result - 0.5) * 1.3 + 0.5, 0, 1)
+    
+    # Convert back to uint8
+    result = (result * 255).astype(np.uint8)
+    
+    return result
+
+def neon_glow_effect(frame):
+    """
+    Creates a vibrant neon glow effect
+    """
+    # Detect edges
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    
+    # Dilate edges for glow
+    kernel = np.ones((3, 3), np.uint8)
+    edges_dilated = cv2.dilate(edges, kernel, iterations=2)
+    
+    # Create colored glow
+    glow = cv2.cvtColor(edges_dilated, cv2.COLOR_GRAY2BGR)
+    glow = cv2.GaussianBlur(glow, (15, 15), 0)
+    
+    # Boost colors
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 2.0, 0, 255)
+    vibrant = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    
+    # Add glow to vibrant image
+    result = cv2.addWeighted(vibrant, 0.7, glow, 0.3, 0)
+    
+    return result
+
+def vintage_film_effect(frame):
+    """
+    Creates a vintage film look with warm tones and vignette
+    """
+    # Add warm tone
+    result = frame.copy().astype(np.float32)
+    result[:, :, 0] = result[:, :, 0] * 0.8  # Reduce blue
+    result[:, :, 2] = np.clip(result[:, :, 2] * 1.2, 0, 255)  # Boost red
+    
+    # Add slight blur for softness
+    result = cv2.GaussianBlur(result, (3, 3), 0)
+    
+    # Add vignette
+    rows, cols = frame.shape[:2]
+    kernel_x = cv2.getGaussianKernel(cols, cols/2)
+    kernel_y = cv2.getGaussianKernel(rows, rows/2)
+    kernel = kernel_y * kernel_x.T
+    mask = kernel / kernel.max()
+    mask = mask ** 0.6
+    
+    for i in range(3):
+        result[:, :, i] = result[:, :, i] * mask
+    
+    # Add grain/noise
+    noise = np.random.normal(0, 5, frame.shape).astype(np.float32)
+    result = result + noise
+    
+    result = np.clip(result, 0, 255).astype(np.uint8)
+    
+    return result
+
+def crystal_clear_effect(frame):
+    """
+    Creates an ultra-sharp, crystal clear effect
+    """
+    # Sharpen using unsharp mask
+    gaussian = cv2.GaussianBlur(frame, (0, 0), 3.0)
+    sharpened = cv2.addWeighted(frame, 2.0, gaussian, -1.0, 0)
+    
+    # Enhance details
+    gray = cv2.cvtColor(sharpened, cv2.COLOR_BGR2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    laplacian = np.uint8(np.absolute(laplacian))
+    laplacian_colored = cv2.cvtColor(laplacian, cv2.COLOR_GRAY2BGR)
+    
+    result = cv2.addWeighted(sharpened, 0.9, laplacian_colored, 0.1, 0)
+    
+    # Boost clarity
+    lab = cv2.cvtColor(result, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    result = cv2.merge([l, a, b])
+    result = cv2.cvtColor(result, cv2.COLOR_LAB2BGR)
+    
+    return result
+
+def cyberpunk_effect(frame):
+    """
+    Creates a cyberpunk-style effect with neon colors
+    """
+    # Edge detection
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 100, 200)
+    
+    # Create color-shifted version
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hsv[:, :, 0] = (hsv[:, :, 0] + 30) % 180  # Shift hue
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 2.5, 0, 255)  # Max saturation
+    colored = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    
+    # Add bright edges
+    edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    edges_colored[:, :, 0] = 255  # Cyan edges
+    edges_colored[:, :, 1] = 0
+    edges_colored[:, :, 2] = 255
+    
+    # Combine
+    result = cv2.addWeighted(colored, 0.7, edges_colored, 0.3, 0)
+    
+    return result
+
+def infrared_effect(frame):
+    """
+    Simulates infrared photography look
+    """
+    # Swap red and blue channels, boost contrast
+    b, g, r = cv2.split(frame)
+    
+    # Infrared typically shows vegetation as bright
+    infrared = cv2.merge([r, g, b])  # Swap red and blue
+    
+    # Increase contrast
+    infrared = cv2.convertScaleAbs(infrared, alpha=1.3, beta=10)
+    
+    # Add slight blur
+    infrared = cv2.GaussianBlur(infrared, (3, 3), 0)
+    
+    # Reduce saturation for ethereal look
+    hsv = cv2.cvtColor(infrared, cv2.COLOR_BGR2HSV)
+    hsv[:, :, 1] = hsv[:, :, 1] * 0.3
+    infrared = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    
+    return infrared
+
+def motion_blur_effect(frame):
+    """
+    Adds directional motion blur for dynamic effect
+    """
+    # Create motion blur kernel (horizontal)
+    size = 20
+    kernel = np.zeros((size, size))
+    kernel[int((size-1)/2), :] = np.ones(size)
+    kernel = kernel / size
+    
+    # Apply motion blur
+    blurred = cv2.filter2D(frame, -1, kernel)
+    
+    # Keep some of original for mixed effect
+    result = cv2.addWeighted(frame, 0.3, blurred, 0.7, 0)
+    
+    return result
+
+def dramatic_bw_contrast(frame):
+    """
+    Creates high-contrast black and white with dramatic lighting
+    """
+    # Convert to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Apply CLAHE for dramatic contrast
+    clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    
+    # Increase contrast further
+    enhanced = cv2.convertScaleAbs(enhanced, alpha=1.5, beta=-30)
+    
+    # Convert back to color for display
+    result = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+    
+    return result
+
+def miniature_tilt_shift(frame):
+    """
+    Creates tilt-shift/miniature effect
+    """
+    # Create depth-based blur
+    h, w = frame.shape[:2]
+    
+    # Top and bottom will be blurred
+    result = frame.copy()
+    
+    # Create gradient mask (sharp in middle, blurred at edges)
+    y_coords = np.arange(h)
+    center = h // 2
+    distance_from_center = np.abs(y_coords - center) / (h / 2)
+    
+    # Apply blur based on distance from center
+    for i in range(h):
+        if distance_from_center[i] > 0.3:
+            blur_amount = int(distance_from_center[i] * 15) * 2 + 1
+            result[i:i+1, :] = cv2.GaussianBlur(result[i:i+1, :], 
+                                                (blur_amount, blur_amount), 0)
+    
+    # Boost saturation and contrast
+    hsv = cv2.cvtColor(result, cv2.COLOR_BGR2HSV)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.5, 0, 255)
+    result = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    result = cv2.convertScaleAbs(result, alpha=1.3, beta=10)
+    
+    return result
+
+def create_before_after_display(before, after, title="Effect"):
+    """
+    Creates a side-by-side before/after comparison
+    """
+    # Ensure same size
+    if before.shape != after.shape:
+        after = cv2.resize(after, (before.shape[1], before.shape[0]))
+    
+    # Create side-by-side
+    combined = np.hstack([before, after])
+    
+    # Add vertical divider
+    h, w = before.shape[:2]
+    cv2.line(combined, (w, 0), (w, h), (255, 255, 255), 3)
+    
+    return combined
+
+# Main execution
+if __name__ == "__main__":
+    # Load image
+    frame = cv2.imread("/Users/camillelu/Downloads/ME35.jpg", 1)
+    
+    if frame is None:
+        print("Error: Could not load image")
+        exit()
+    
+    # Resize for display
+    height, width = frame.shape[:2]
+    if width > 600:
+        scale = 600 / width
+        frame = cv2.resize(frame, (int(width * scale), int(height * scale)))
+    
+    print("Applying various effects with before/after comparisons...")
+    print("Press any key to cycle through effects, ESC to exit")
+    
+    # Define all effects
+    effects = [
+        ("Dramatic Enhancement", dramatic_enhancement),
+        ("Neon Glow", neon_glow_effect),
+        ("Vintage Film", vintage_film_effect),
+        ("Crystal Clear", crystal_clear_effect),
+        ("Cyberpunk", cyberpunk_effect),
+        ("Infrared", infrared_effect),
+        ("Motion Blur", motion_blur_effect),
+        ("High Contrast B&W", dramatic_bw_contrast),
+        ("Tilt-Shift Miniature", miniature_tilt_shift),
+    ]
+    
+    # Show each effect
+    for name, effect_func in effects:
+        print(f"\nShowing: {name}")
+        
+        # Apply effect
+        after = effect_func(frame)
+        
+        # Create before/after comparison
+        comparison = create_before_after_display(frame, after, name)
+        
+        # Display
+        cv2.imshow("Before & After Comparison", comparison)
+        
+        # Wait for key
+        key = cv2.waitKey(0)
+        if key == 27:  # ESC key
+            break
+    
+    print("\n" + "="*60)
+    print("All effects shown!")
+    print("="*60)
+    cv2.destroyAllWindows()
