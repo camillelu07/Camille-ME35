@@ -1,0 +1,93 @@
+from machine import Pin, PWM
+import sys
+import select
+import time
+
+# Motor pins
+MOTOR_PIN_1 = 12
+MOTOR_PIN_2 = 13
+
+# Setup motor pins
+motor1 = PWM(Pin(MOTOR_PIN_1), freq=1000)
+motor2 = PWM(Pin(MOTOR_PIN_2), freq=1000)
+
+def stop_motor():
+    motor1.duty(0)
+    motor2.duty(0)
+
+def celebration_dance():
+    # Wave the flag back and forth multiple times
+    
+    # Wave right
+    motor1.duty(700)
+    motor2.duty(0)
+    time.sleep(0.25)
+    stop_motor()
+    time.sleep(0.05)
+    
+    # Wave left
+    motor1.duty(0)
+    motor2.duty(700)
+    time.sleep(0.25)
+    stop_motor()
+    time.sleep(0.05)
+    
+    # Wave right
+    motor1.duty(700)
+    motor2.duty(0)
+    time.sleep(0.25)
+    stop_motor()
+    time.sleep(0.05)
+    
+    # Wave left
+    motor1.duty(0)
+    motor2.duty(700)
+    time.sleep(0.25)
+    stop_motor()
+    time.sleep(0.05)
+    
+    # Wave right
+    motor1.duty(700)
+    motor2.duty(0)
+    time.sleep(0.25)
+    stop_motor()
+    time.sleep(0.05)
+    
+    # Return to center (wave left to balance out)
+    motor1.duty(0)
+    motor2.duty(700)
+    time.sleep(0.25)
+    
+    # Stop at original position
+    stop_motor()
+
+# Make sure motor is stopped at start
+stop_motor()
+
+# Use sys.stdin to read from USB
+poll = select.poll()
+poll.register(sys.stdin, select.POLLIN)
+
+# Buffer to accumulate data
+data_buffer = ""
+
+while True:
+    # Check if data is available on stdin
+    events = poll.poll(10)
+    
+    if events:
+        try:
+            char = sys.stdin.read(1)
+            if char:
+                data_buffer += char
+                
+                # Check if we have "GOAL" in the buffer
+                if "GOAL" in data_buffer:
+                    celebration_dance()
+                    data_buffer = ""
+                    
+                # Prevent buffer from growing too large
+                if len(data_buffer) > 100:
+                    data_buffer = data_buffer[-50:]
+        except:
+            pass
